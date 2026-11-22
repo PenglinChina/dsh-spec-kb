@@ -15,9 +15,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - run: node --check index.js
-      - run: node --check client.js
-      - run: npm test
+      - run: npm run check
+      - run: npm run test:ci
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.DSH_SPEC_KB_NPM_TOKEN }}

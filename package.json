@@ -26,7 +26,8 @@
     "test/selftest.mjs",
     "test/regression.test.mjs",
     "test/web.test.mjs",
-    "test/client.test.mjs"
+    "test/client.test.mjs",
+    "test/ci.test.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -42,7 +43,8 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js && node --check lib/kb.js && node --check lib/routes.js && node --check lib/settings.js",
-    "test": "node test/selftest.mjs && node test/regression.test.mjs && node test/web.test.mjs && node test/client.test.mjs"
+    "test": "node test/selftest.mjs && node test/regression.test.mjs && node test/web.test.mjs && node test/client.test.mjs",
+    "test:ci": "node test/ci.test.mjs && node test/client.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",

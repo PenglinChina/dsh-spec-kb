@@ -13,6 +13,11 @@ import { SpecKbRegistry, discoverKbDirs, normalizeKind, tokenize } from '../lib/
 
 const ROOT = process.env.SPEC_KB_ROOT ?? 'F:/MyProject/spec-kb'
 const registry = new SpecKbRegistry({ paths: [ROOT], maxResults: 8, maxBodyChars: 6000 })
+await registry.ensure()
+if (registry.kbs.length === 0) {
+  console.log(`SKIP  no portable-spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
+  process.exit(0)
+}
 
 let passed = 0
 let failed = 0

@@ -26,6 +26,12 @@ const defaults = [ROOT]
 const registry = new SpecKbRegistry({ paths: defaults })
 const routes = createSpecKbRoutes({ registry, defaults })
 
+await registry.ensure()
+if (registry.kbs.length === 0) {
+  console.log(`SKIP  no portable-spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
+  process.exit(0)
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const route = routes.find((item) => item.path === url.pathname)

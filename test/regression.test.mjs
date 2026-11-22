@@ -10,6 +10,10 @@ import { SpecKbRegistry, expandQuery, citationOf } from '../lib/kb.js'
 const ROOT = process.env.SPEC_KB_ROOT ?? 'F:/MyProject/spec-kb'
 const registry = new SpecKbRegistry({ paths: [ROOT] })
 await registry.ensure()
+if (registry.kbs.length === 0) {
+  console.log(`SKIP  no portable-spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
+  process.exit(0)
+}
 const autosar = registry.byId('autosar-spec-4.3.1')
 const neusar = registry.byId('neusar-ccore-v3')
 
