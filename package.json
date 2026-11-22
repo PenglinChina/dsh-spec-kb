@@ -1,0 +1,52 @@
+{
+  "name": "dsh-spec-kb",
+  "version": "0.2.1",
+  "description": "Mount local standard spec-kb stores and make the agent consult them first with citation-bearing tools.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.5 <0.3.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "test/selftest.mjs",
+    "test/regression.test.mjs",
+    "test/web.test.mjs",
+    "test/client.test.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && node --check lib/kb.js && node --check lib/routes.js && node --check lib/settings.js",
+    "test": "node test/selftest.mjs && node test/regression.test.mjs && node test/web.test.mjs && node test/client.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  }
+}

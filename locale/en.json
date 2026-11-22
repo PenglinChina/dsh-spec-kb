@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Spec knowledge base",
+    "description": "Mount local standard spec-kb stores and pick their paths under Settings. Gives the agent citation-bearing search, retrieval, requirement tracing, compliance lookup, and evidence briefs, plus guidance to consult the stores before answering questions they cover."
+  }
+}

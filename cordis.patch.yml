@@ -1,0 +1,14 @@
+# dsh-spec-kb — mount local standard spec-kb stores.
+#
+# `paths` may list store directories or a parent directory whose direct children
+# are stores. Each store stays the source of truth; nothing is imported or copied.
+- insert:
+    - id: spec-kb
+      name: 'dsh-spec-kb'
+      config:
+        paths:
+          - 'F:/MyProject/spec-kb'
+        guidance: true
+        maxResults: 8
+        maxBodyChars: 6000
+        loadOnStart: false
