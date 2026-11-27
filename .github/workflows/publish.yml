@@ -6,6 +6,14 @@ on:
     tags:
       - 'v*'
 
+# A release must not race another release. npm stages a version before it is
+# finalised, so two concurrent publishes of the same version fail with 409
+# ("previously staged version"); a re-run after success fails with 403
+# ("cannot publish over the previously published versions").
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -17,6 +25,26 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm run check
       - run: npm run test:ci
-      - run: npm publish
+      - name: Read the package version
+        id: version
+        run: |
+          VERSION=$(node -e "console.log(require('./package.json').version)")
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Check whether the version is already on npm
+        id: published
+        run: |
+          if npm view "dsh-spec-kb@${{ steps.version.outputs.value }}" version >/dev/null 2>&1; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Re-running this workflow for a version that is already published is a
+      # no-op rather than a failure, so the run stays green and a retry is safe.
+      - name: Publish
+        if: steps.published.outputs.value == 'false'
+        run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.DSH_SPEC_KB_NPM_TOKEN }}
+      - name: Report an already-published version
+        if: steps.published.outputs.value == 'true'
+        run: echo "::notice::dsh-spec-kb@${{ steps.version.outputs.value }} is already on npm; nothing to publish."
