@@ -2,11 +2,11 @@
  * CI test: runs without any external knowledge base.
  *
  * The other suites read the real stores under `SPEC_KB_ROOT` (default
- * `F:/MyProject/spec-kb`) and skip when that path is absent, so they cannot run
- * on a clean runner. This suite builds a tiny two-store fixture in a temp
- * directory — one English store modelled on the AUTOSAR layout and one Chinese
- * vendor store with compliance findings — and exercises the reader, the
- * registry, the citations and the HTTP routes against it.
+ * `F:/spec-kb`) and skip when that path is absent, so they cannot run on a clean
+ * runner. This suite builds fixture stores in a temp directory — an English store
+ * modelled on the AUTOSAR layout, a Chinese vendor store with compliance
+ * findings, a BOM-prefixed cache fixture and a plain JSONL store — and exercises
+ * the reader, discovery, the citations and the HTTP routes against them.
  *
  *   node test/ci.test.mjs
  */
@@ -20,7 +20,7 @@ import { join, resolve } from 'node:path'
 const home = mkdtempSync(join(tmpdir(), 'dsh-spec-kb-ci-'))
 process.env.DSH_HOME = home
 
-const { SpecKbRegistry, citationOf } = await import('../lib/kb.js')
+const { SpecKb, SpecKbRegistry, bodyOf, citationOf, discoverKbDirs, looksLikeStoreSync } = await import('../lib/kb.js')
 const { createSpecKbRoutes } = await import('../lib/routes.js')
 
 // ── fixture ────────────────────────────────────────────────────────────────
@@ -393,6 +393,150 @@ await check('a generic store validates with SKIP, not FAIL', async () => {
   assert.equal(report.profile, 'generic')
   assert.ok(report.checks.some((item) => item.status === 'SKIP'))
   assert.ok(!report.checks.some((item) => item.status === 'FAIL'))
+})
+
+// ── edge cases: rebuilt stores, discovery, section layouts ─────────────────
+
+const edge = join(home, 'edge')
+mkdirSync(edge, { recursive: true })
+
+function minimalManifest(kbId, files = { entries: 'entries.jsonl' }) {
+  return { kb_id: kbId, name: { zh: kbId, en: kbId }, format: { name: 'portable-spec-kb' }, files, counts: {} }
+}
+
+function edgeStore(name, manifest, entries) {
+  const dir = join(edge, name)
+  mkdirSync(dir, { recursive: true })
+  if (manifest !== null) {
+    writeFileSync(join(dir, 'manifest.json'), typeof manifest === 'string' ? manifest : JSON.stringify(manifest))
+  }
+  if (entries !== null) writeFileSync(join(dir, 'entries.jsonl'), entries)
+  return dir
+}
+
+await check('a rebuilt store is re-indexed before the next read', async () => {
+  const record = (name, section) => JSON.stringify({ id: 'rebuilt:a', kind: 'requirement', module: 'M', name, section, page: Number(section) })
+  const dir = edgeStore('rebuilt', minimalManifest('rebuilt'), `${record('AAA', '1')}\n`)
+  const local = new SpecKbRegistry({ paths: [dir] })
+  await local.ensure()
+  assert.equal((await local.get('rebuilt:a')).record.name, 'AAA')
+  writeFileSync(join(dir, 'entries.jsonl'), `${record('AAA-v2', '2')}\n`)
+  const after = await local.get('rebuilt:a')
+  assert.equal(after.found, true)
+  assert.equal(after.record.name, 'AAA-v2')
+  assert.ok(after.citation.includes('§2'), after.citation)
+})
+
+await check('a parent with its own JSONL still mounts the stores beside it', async () => {
+  const parent = join(edge, 'parent-with-notes')
+  mkdirSync(parent, { recursive: true })
+  writeFileSync(join(parent, 'notes.jsonl'), JSON.stringify({ title: 'Meeting notes', text: 'scratch' }) + '\n')
+  const child = join(parent, 'child-store')
+  mkdirSync(child, { recursive: true })
+  writeFileSync(join(child, 'manifest.json'), JSON.stringify(minimalManifest('child-store')))
+  writeFileSync(join(child, 'entries.jsonl'), JSON.stringify({ id: 'child-store:1', kind: 'section', module: 'M', name: 'C', section: '1', page: 1 }) + '\n')
+  const local = new SpecKbRegistry({ paths: [parent] })
+  await local.ensure()
+  assert.deepEqual(
+    local.kbs.map((kb) => kb.kbId).sort((a, b) => a.localeCompare(b)),
+    ['child-store', 'parent-with-notes'],
+  )
+})
+
+await check('a single sections file is filtered by module whatever its name', async () => {
+  const dir = edgeStore(
+    'hybrid-sections',
+    minimalManifest('hybrid-sections', { entries: 'entries.jsonl', sections: 'all-sections.jsonl' }),
+    JSON.stringify({ id: 'hybrid-sections:a', kind: 'section', module: 'A', name: 'A record', section: '1', page: 1 }) + '\n',
+  )
+  writeFileSync(
+    join(dir, 'all-sections.jsonl'),
+    [
+      JSON.stringify({ module: 'A', section: '1', title: 'A sec', text: 'A text' }),
+      JSON.stringify({ module: 'B', section: '2', title: 'B sec', text: 'B text' }),
+    ].join('\n') + '\n',
+  )
+  const store = new SpecKb(dir)
+  await store.load()
+  const result = await store.sections('A')
+  assert.equal(result.total, 1)
+  assert.equal(result.items[0].title, 'A sec')
+})
+
+await check('sections rows from a plain store use the same aliases', async () => {
+  const dir = join(edge, 'aliased-sections')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'data.jsonl'), JSON.stringify({ id: 'aliased-sections:1', title: 'Rule', text: 'Rule body', category: 'Core' }) + '\n')
+  writeFileSync(join(dir, 'sections.jsonl'), JSON.stringify({ category: 'Core', heading: 'Heading', pageNo: 7, content: 'Section body' }) + '\n')
+  const store = new SpecKb(dir)
+  await store.load()
+  const result = await store.sections('Core')
+  assert.equal(result.total, 1)
+  assert.equal(result.items[0].title, 'Heading')
+  assert.equal(result.items[0].page, 7)
+  assert.match(result.items[0].text, /Section body/)
+})
+
+await check('a broken manifest is reported instead of dropped', async () => {
+  const dir = edgeStore('broken-manifest', '{ not json', JSON.stringify({ id: 'broken-manifest:1', name: 'B' }) + '\n')
+  assert.deepEqual(await discoverKbDirs([dir]), [dir])
+  const local = new SpecKbRegistry({ paths: [dir] })
+  await local.ensure()
+  assert.equal(local.kbs.length, 1)
+  assert.match(String(local.kbs[0].loadError), /not valid JSON/)
+})
+
+await check('a JSON array line is not a record', async () => {
+  const dir = join(edge, 'array-line')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'data.jsonl'), `[1,2,3]\n${JSON.stringify({ id: 'array-line:1', title: 'real record' })}\n`)
+  const store = new SpecKb(dir)
+  await store.load()
+  assert.equal(store.entries.length, 1)
+  assert.equal(store.entries[0].id, 'array-line:1')
+})
+
+await check('concurrent section reads do not inflate the cache budget', async () => {
+  const dir = edgeStore(
+    'concurrent-sections',
+    minimalManifest('concurrent-sections', { entries: 'entries.jsonl', sections: 'sections/' }),
+    JSON.stringify({ id: 'concurrent-sections:1', kind: 'section', module: 'M', name: 'M', section: '1', page: 1 }) + '\n',
+  )
+  mkdirSync(join(dir, 'sections'), { recursive: true })
+  writeFileSync(join(dir, 'sections', 'M.jsonl'), JSON.stringify({ section: '1', title: 't', text: 'x'.repeat(5000) }) + '\n')
+  const store = new SpecKb(dir)
+  await store.load()
+  await Promise.all([store.sections('M'), store.sections('M'), store.sections('M')])
+  const sizeOf = (list) => list.reduce((total, item) => total + item.text.length + item.title.length + 200, 0)
+  assert.equal(store.sectionsBytes, sizeOf(store.sectionsCache.get('M')))
+})
+
+await check('get cites a plain store the way search does', async () => {
+  const dir = join(edge, 'cited-plain')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'data.jsonl'),
+    JSON.stringify({ uid: 'cited-plain:1', heading: 'Rule', definition: 'Body through the definition field.', category: 'Core', chapter: '9', pageNo: 7, doc: 'vendor.pdf' }) + '\n',
+  )
+  const local = new SpecKbRegistry({ paths: [dir] })
+  await local.ensure()
+  const found = await local.get('cited-plain:1')
+  assert.ok(found.citation.includes('vendor'), found.citation)
+  assert.ok(found.citation.includes('§9'), found.citation)
+  assert.ok(found.citation.includes('p.7'), found.citation)
+  assert.equal(bodyOf(found.record), 'Body through the definition field.')
+})
+
+await check('the sync store probe follows the loader', async () => {
+  const foreign = join(edge, 'foreign-manifest')
+  mkdirSync(foreign, { recursive: true })
+  writeFileSync(join(foreign, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'extension' }))
+  assert.equal(looksLikeStoreSync(foreign), false)
+  assert.deepEqual(await discoverKbDirs([foreign]), [])
+  const logs = join(edge, 'log-dir')
+  mkdirSync(logs, { recursive: true })
+  writeFileSync(join(logs, 'access.jsonl'), 'not json at all\n')
+  assert.equal(looksLikeStoreSync(logs), false)
 })
 
 // ── HTTP routes (Settings page) ────────────────────────────────────────────

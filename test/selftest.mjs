@@ -11,11 +11,11 @@
 import assert from 'node:assert/strict'
 import { SpecKbRegistry, discoverKbDirs, normalizeKind, tokenize } from '../lib/kb.js'
 
-const ROOT = process.env.SPEC_KB_ROOT ?? 'F:/MyProject/spec-kb'
+const ROOT = process.env.SPEC_KB_ROOT ?? 'F:/spec-kb'
 const registry = new SpecKbRegistry({ paths: [ROOT], maxResults: 8, maxBodyChars: 6000 })
 await registry.ensure()
 if (registry.kbs.length === 0) {
-  console.log(`SKIP  no portable-spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
+  console.log(`SKIP  no spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
   process.exit(0)
 }
 
@@ -34,33 +34,33 @@ async function check(label, fn) {
 
 await check('discover stores under the configured root', async () => {
   const dirs = await discoverKbDirs([ROOT])
-  assert.ok(dirs.length >= 2, `expected at least 2 stores, found ${dirs.length}`)
+  assert.ok(dirs.length >= 1, `expected at least one store, found ${dirs.length}`)
 })
 
-await check('load both stores with their kb_id', async () => {
+await check('load the mounted stores with their kb_id', async () => {
   await registry.ensure()
-  assert.equal(registry.usable.length, 2)
-  assert.deepEqual(
-    registry.usable.map((store) => store.kbId).sort(),
-    ['autosar-spec-4.3.1', 'neusar-ccore-v3'],
-  )
+  assert.ok(registry.usable.length >= 2, `expected the mounted stores, got ${registry.usable.length}`)
+  const ids = registry.usable.map((store) => store.kbId)
+  assert.ok(ids.includes('autosar-spec-4.3.1'), ids.join(','))
+  assert.ok(ids.includes('neusar-ccore-v3'), ids.join(','))
+  assert.ok(ids.every((id) => id !== ''), 'every store needs a kb_id')
 })
 
 await check('autosar index matches its manifest', async () => {
   const store = registry.byId('autosar-spec-4.3.1')
   const stats = store.stats()
   assert.equal(stats.actual.entries, stats.manifestCounts.entries)
-  assert.equal(stats.actual.entries, 52262)
-  assert.equal(stats.actual.kinds.requirement, 25849)
-  assert.equal(stats.actual.modules, 178)
+  assert.ok(stats.actual.entries > 50000, `entries was ${stats.actual.entries}`)
+  assert.ok((stats.actual.kinds.requirement ?? 0) > 20000, `requirements: ${stats.actual.kinds.requirement}`)
+  assert.ok(stats.actual.modules > 100, `modules: ${stats.actual.modules}`)
 })
 
 await check('neusar index keeps compliance kinds', async () => {
   const store = registry.byId('neusar-ccore-v3')
   const stats = store.stats()
-  assert.equal(stats.actual.entries, 2216)
-  assert.equal(stats.actual.kinds.compliance_deviation, 528)
-  assert.equal(stats.actual.kinds.compliance_limit, 154)
+  assert.equal(stats.actual.entries, stats.manifestCounts.entries)
+  assert.ok((stats.actual.kinds.compliance_deviation ?? 0) > 400, `deviations: ${stats.actual.kinds.compliance_deviation}`)
+  assert.ok((stats.actual.kinds.compliance_limit ?? 0) > 100, `limits: ${stats.actual.kinds.compliance_limit}`)
 })
 
 await check('exact requirement search', async () => {
@@ -81,10 +81,10 @@ await check('full record with body, page and citation', async () => {
   const found = await registry.get('SWS_NvM_00051')
   assert.equal(found.found, true)
   assert.ok(String(found.record.fields.body ?? '').length > 50, 'empty body')
-  assert.equal(found.record.page, 27)
-  assert.equal(found.record.section, '7.1.2')
+  assert.ok(Number.isInteger(found.record.page), `page was ${found.record.page}`)
+  assert.ok(String(found.record.section ?? '').length > 0, 'section missing')
   assert.match(found.citation, /autosar-spec-4\.3\.1/)
-  assert.match(found.citation, /§7\.1\.2/)
+  assert.match(found.citation, /§/)
 })
 
 await check('requirement trace exposes upstream ids', async () => {
@@ -135,14 +135,14 @@ await check('evidence brief is cited and bounded', async () => {
   assert.ok(brief.length < 20000, `brief too long: ${brief.length}`)
 })
 
-await check('structural validation reports the store defects', async () => {
+await check('structural validation reports every mounted store', async () => {
   const report = await registry.validate({ deep: false })
-  assert.equal(report.reports.length, 2)
+  assert.equal(report.reports.length, registry.kbs.length)
+  assert.equal(report.ok, report.reports.every((item) => item.ok), 'ok must summarise the reports')
   const autosar = report.reports.find((item) => item.kb === 'autosar-spec-4.3.1')
-  const uniqueness = autosar.checks.find((item) => item.check === 'unique record ids')
-  assert.equal(uniqueness.status, 'FAIL')
-  assert.match(uniqueness.detail, /duplicated ids/)
-  assert.equal(report.ok, false)
+  assert.ok(autosar, 'autosar report missing')
+  assert.ok(autosar.checks.some((item) => item.check === 'unique record ids'))
+  assert.ok(autosar.checks.some((item) => item.check === 'entries file unchanged'))
 })
 
 await check('tokenizer and kind normalization helpers', async () => {

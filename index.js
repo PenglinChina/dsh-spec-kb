@@ -18,7 +18,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { SpecKbRegistry, citationOf, clip, looksLikeStoreSync, normalizePathList } from './lib/kb.js'
+import { SpecKbRegistry, bodyOf, citationOf, clip, looksLikeStoreSync, normalizePathList } from './lib/kb.js'
 import { createSpecKbRoutes } from './lib/routes.js'
 import { effectivePaths } from './lib/settings.js'
 
@@ -80,17 +80,9 @@ function projectHits(hits) {
 /** Full record projected for the model: same fields plus bounded body text. */
 function projectRecord(store, index, record, maxBodyChars) {
   const fields = record?.fields && typeof record.fields === 'object' ? record.fields : {}
-  const body =
-    fields.body ??
-    fields.definition ??
-    fields.description ??
-    fields.syntax ??
-    fields.lead ??
-    record?.text ??
-    record?.content ??
-    record?.body ??
-    record?.summary ??
-    ''
+  // `bodyOf` applies the same aliases the index used, so `get` returns the text
+  // the search hit summarised — including a plain JSONL store's `text`/`content`.
+  const bodyText = String(bodyOf(record) ?? '')
   const fieldSummary = {}
   for (const [key, value] of Object.entries(fields)) {
     if (value === null || value === undefined) continue
@@ -98,22 +90,25 @@ function projectRecord(store, index, record, maxBodyChars) {
     if (key === 'body' || key === 'definition' || key === 'description' || key === 'syntax' || key === 'lead') continue
     fieldSummary[key] = clip(text, 400)
   }
-  const bodyText = String(body ?? '')
   return {
     kb: store.kbId,
     id: index.id,
     kind: index.kind,
     module: index.module,
     name: index.name,
-    title: index.title || undefined,
+    // A single-field record gives name and title the same value; repeating it
+    // adds no information.
+    title: index.title && index.title !== index.name ? index.title : undefined,
     section: index.section || undefined,
     page: index.page ?? undefined,
     language: record?.language ?? undefined,
-    document: record?.source?.document ?? undefined,
-    documentId: record?.source?.document_id ?? undefined,
-    upstream: Array.isArray(record?.upstream) ? record.upstream : undefined,
+    document: index.document || undefined,
+    documentId: record?.source?.document_id ?? record?.document_id ?? undefined,
+    upstream: Array.isArray(index.upstream) && index.upstream.length > 0 ? index.upstream : undefined,
     requirement: record?.requirement ?? undefined,
-    citation: citationOf(store.kbId, record ?? {}),
+    // Cite the index, like a search hit: the raw record's field names may not be
+    // the ones `citationOf` recognises.
+    citation: citationOf(store.kbId, index),
     fields: Object.keys(fieldSummary).length > 0 ? fieldSummary : undefined,
     body: bodyText === '' ? undefined : clip(bodyText, maxBodyChars),
     bodyTruncated: bodyText.length > maxBodyChars ? true : undefined,
@@ -127,16 +122,17 @@ function describeStores(paths) {
     const dir = String(raw).replace(/[\\/]+$/, '')
     if (dir === '') continue
     try {
-      if (looksLikeStoreSync(dir)) {
-        names.push(basename(dir))
-        continue
-      }
+      // A path may be a store, a parent of stores, or both; the prompt must name
+      // exactly what the loader mounts, so children are always inspected.
+      if (looksLikeStoreSync(dir)) names.push(basename(dir))
       for (const child of readdirSync(dir, { withFileTypes: true })) {
         if (!child.isDirectory()) continue
+        const name = child.name.toLowerCase()
+        if (name === 'sections' || name === 'chunks' || name.startsWith('.')) continue
         if (looksLikeStoreSync(join(dir, child.name))) names.push(child.name)
       }
     } catch {
-      names.push(basename(dir))
+      /* a path that does not exist contributes no store names */
     }
   }
   return [...new Set(names)]
@@ -230,8 +226,16 @@ export async function apply(ctx, config) {
         const knowledgeBases = registry.kbs.map((store) =>
           store.loadError ? { dir: store.dir, error: store.loadError } : projectStats(store.stats()),
         )
+        // The store mix is per-store data; a top-level "format" would claim every
+        // store follows the portable contract even when a generic one is mounted.
+        const profiles = {}
+        for (const store of registry.kbs) {
+          const key = store.loadError ? 'failed' : store.profile || 'unknown'
+          profiles[key] = (profiles[key] ?? 0) + 1
+        }
         return json({
-          format: 'portable-spec-kb',
+          tool: 'dsh-spec-kb',
+          profiles,
           paths: { defaults, effective: effective.paths, source: effective.source },
           loadedInMs: registry.loadMs,
           knowledgeBases,
@@ -307,7 +311,15 @@ export async function apply(ctx, config) {
             available: registry.usable.map((store) => store.kbId),
           })
         }
-        if (!found.found) return json({ found: false, name: args.name, suggestions: found.suggestions ?? [] })
+        if (!found.found) {
+          return json({
+            found: false,
+            name: args.name,
+            stale: found.stale ? true : undefined,
+            hint: found.hint,
+            suggestions: found.suggestions ?? [],
+          })
+        }
         return json({
           found: true,
           duplicateRecords: found.duplicateCount > 0 ? found.duplicateCount : undefined,

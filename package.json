@@ -1,6 +1,6 @@
 {
   "name": "dsh-spec-kb",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Mount local standard spec-kb stores and make the agent consult them first with citation-bearing tools.",
   "type": "module",
   "license": "MIT",

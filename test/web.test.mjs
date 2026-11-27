@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { createServer, request } from 'node:http'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, basename, dirname } from 'node:path'
 
 const DSH_BASE = mkdtempSync(join(tmpdir(), 'dsh-spec-kb-web-'))
 process.env.DSH_HOME = DSH_BASE
@@ -21,14 +21,14 @@ const { SpecKbRegistry } = await import('../lib/kb.js')
 const { createSpecKbRoutes } = await import('../lib/routes.js')
 const { settingsFile } = await import('../lib/settings.js')
 
-const ROOT = process.env.SPEC_KB_ROOT ?? 'F:/MyProject/spec-kb'
+const ROOT = process.env.SPEC_KB_ROOT ?? 'F:/spec-kb'
 const defaults = [ROOT]
 const registry = new SpecKbRegistry({ paths: defaults })
 const routes = createSpecKbRoutes({ registry, defaults })
 
 await registry.ensure()
 if (registry.kbs.length === 0) {
-  console.log(`SKIP  no portable-spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
+  console.log(`SKIP  no spec-kb store under ${ROOT} (this suite needs real stores; test/ci.test.mjs is the data-free one)`)
   process.exit(0)
 }
 
@@ -77,30 +77,35 @@ async function check(label, fn) {
   }
 }
 
-await check('status reports the bundle defaults and both stores', async () => {
+await check('status reports the mounted stores', async () => {
   const { status, body } = await get('/api/spec-kb/status')
   assert.equal(status, 200)
   assert.equal(body.source, 'bundle')
   assert.deepEqual(body.paths, [resolve(ROOT)])
-  assert.equal(body.stores.length, 2)
-  assert.deepEqual(body.stores.map((store) => store.kb_id).sort(), ['autosar-spec-4.3.1', 'neusar-ccore-v3'])
+  assert.equal(body.stores.length, registry.kbs.length)
   assert.ok(body.stores.every((store) => store.entries > 0))
+  assert.ok(body.stores.every((store) => typeof store.profile === 'string'))
 })
 
 await check('browse lists a store directory and marks it', async () => {
-  const { body } = await get(`/api/spec-kb/browse?path=${encodeURIComponent('F:/MyProject/spec-kb/autosar-spec-kb')}`)
+  const storeDir = registry.usable[0].dir
+  const { body } = await get(`/api/spec-kb/browse?path=${encodeURIComponent(storeDir)}`)
   assert.equal(body.ok, true)
   assert.equal(body.isStore, true)
   assert.ok(Array.isArray(body.directories))
 })
 
 await check('browse reaches a parent directory from a child', async () => {
-  const { body } = await get(`/api/spec-kb/browse?path=${encodeURIComponent('F:/MyProject/spec-kb')}`)
+  const { body } = await get(`/api/spec-kb/browse?path=${encodeURIComponent(ROOT)}`)
   assert.equal(body.ok, true)
-  const names = body.directories.map((entry) => entry.name)
-  assert.ok(names.includes('autosar-spec-kb'))
-  assert.ok(names.includes('neusar-spec-kb'))
-  assert.ok(body.directories.every((entry) => entry.store === true))
+  assert.equal(body.path, resolve(ROOT))
+  for (const store of registry.usable) {
+    if (dirname(store.dir) !== resolve(ROOT)) continue
+    const name = basename(store.dir)
+    const entry = body.directories.find((item) => item.name === name)
+    assert.ok(entry !== undefined, `${name} missing from the listing`)
+    assert.equal(entry.store, true, `${name} not marked as a store`)
+  }
 })
 
 await check('browse a missing directory reports the failure', async () => {
@@ -120,7 +125,7 @@ await check('saving a valid path persists it and reloads the stores', async () =
   const { status, body } = await post('/api/spec-kb/paths', { paths: [ROOT] })
   assert.equal(status, 200)
   assert.equal(body.source, 'settings')
-  assert.equal(body.stores.length, 2)
+  assert.equal(body.stores.length, registry.kbs.length)
   assert.equal(existsSync(settingsFile()), true)
 })
 
@@ -140,7 +145,7 @@ await check('reset removes the override and restores the defaults', async () => 
   assert.equal(status, 200)
   assert.equal(body.source, 'bundle')
   assert.equal(existsSync(settingsFile()), false)
-  assert.equal(body.stores.length, 2)
+  assert.equal(body.stores.length, registry.kbs.length)
 })
 
 await check('routes reject the wrong HTTP method', async () => {
