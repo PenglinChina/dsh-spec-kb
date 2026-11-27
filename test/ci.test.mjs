@@ -40,12 +40,13 @@ function manifest(kbId, title, language, modules, count) {
   }
 }
 
-function writeStore(kbId, title, language, entries, sections = {}) {
+function writeStore(kbId, title, language, entries, sections = {}, options = {}) {
   const dir = join(root, kbId)
   mkdirSync(join(dir, 'sections'), { recursive: true })
   const modules = [...new Set(entries.map((entry) => entry.module))]
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest(kbId, title, language, modules, entries.length), null, 1))
-  writeFileSync(join(dir, 'entries.jsonl'), entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+  const body = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
+  writeFileSync(join(dir, 'entries.jsonl'), (options.bom ? '\uFEFF' : '') + body)
   for (const [module, items] of Object.entries(sections)) {
     writeFileSync(join(dir, 'sections', `${module}.jsonl`), items.map((item) => JSON.stringify(item)).join('\n') + '\n')
   }
@@ -140,6 +141,30 @@ writeStore(
       fields: { body: 'The NVRAM manager shall protect NvRAM blocks against unintended write accesses.' },
     },
   ],
+)
+
+// A BOM-prefixed store with more modules than the section cache keeps: the
+// index stores byte ranges into the file, so the three BOM bytes must be
+// accounted for or every record parses as garbage.
+const cacheModules = Array.from({ length: 20 }, (_, i) => `Mod${String(i).padStart(2, '0')}`)
+writeStore(
+  'bom-fixture',
+  'BOM and section-cache fixture',
+  'en',
+  cacheModules.map((module) => ({
+    id: `bom-fixture::${module}`,
+    kind: 'section',
+    module,
+    name: `${module} record`,
+    section: '1',
+    page: 1,
+    source: { document: 'bom.pdf' },
+    fields: { body: `${module} body behind a byte order mark` },
+  })),
+  Object.fromEntries(
+    cacheModules.map((module) => [module, [{ section: '1', page: 1, title: module, text: `${module} section text` }]]),
+  ),
+  { bom: true },
 )
 
 writeStore(
@@ -294,6 +319,25 @@ await check('the fixture validates against its own manifest', async () => {
   assert.equal(report.ok, true, JSON.stringify(report.checks.filter((item) => item.status !== 'PASS')))
 })
 
+await check('records are read back from byte ranges (BOM and UTF-8)', async () => {
+  const bom = registry.byId('bom-fixture')
+  assert.equal(bom.text, '', 'the source text must not be retained')
+  const found = await registry.get('bom-fixture::Mod00')
+  assert.equal(found.found, true)
+  assert.match(String(found.record?.fields?.body ?? ''), /byte order mark/)
+  const nvm = await registry.get('SWS_NvM_00051')
+  assert.match(String(nvm.record?.fields?.body ?? ''), /write protection/i)
+  const zh = await registry.get('neusar-ccore-v3::Dcm_SecurityAccessTiming')
+  assert.equal(zh.found, true)
+  assert.match(String(zh.record?.fields?.body ?? ''), /安全访问/)
+})
+
+await check('the section cache keeps a bounded number of modules', async () => {
+  const store = registry.byId('bom-fixture')
+  for (const module of cacheModules) await store.sections(module)
+  assert.ok(store.sectionsCache.size <= 16, `cache grew to ${store.sectionsCache.size}`)
+})
+
 // ── HTTP routes (Settings page) ────────────────────────────────────────────
 
 const routes = createSpecKbRoutes({ registry, defaults: [root] })
@@ -328,7 +372,10 @@ await check('status reports the fixture stores', async () => {
   const { status, body } = await get('/api/spec-kb/status')
   assert.equal(status, 200)
   assert.deepEqual(body.paths, [resolve(root)])
-  assert.deepEqual(body.stores.map((store) => store.kb_id).sort(), ['autosar-spec-4.3.1', 'neusar-ccore-v3'])
+  assert.deepEqual(
+    body.stores.map((store) => store.kb_id).sort((a, b) => a.localeCompare(b)),
+    ['autosar-spec-4.3.1', 'bom-fixture', 'neusar-ccore-v3'],
+  )
 })
 
 await check('browse marks a store directory', async () => {
@@ -343,7 +390,7 @@ await check('saving paths validates, then persists and reloads', async () => {
   const good = await post('/api/spec-kb/paths', { paths: [root] })
   assert.equal(good.status, 200)
   assert.equal(good.body.source, 'settings')
-  assert.equal(good.body.stores.length, 2)
+  assert.equal(good.body.stores.length, 3)
 })
 
 await check('reset restores the bundle defaults', async () => {

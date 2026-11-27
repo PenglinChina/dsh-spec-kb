@@ -190,6 +190,14 @@ export async function apply(ctx, config) {
     pathProvider: () => effectivePaths(defaults).paths,
   })
   const disposers = []
+  // Surfaced by spec_kb_info: a Settings page that never registered is a
+  // diagnosable fact, not something to hide behind a log line.
+  const routesState = { ok: false, reason: 'not attempted' }
+  const keep = (disposer, label) => {
+    if (typeof disposer === 'function') disposers.push(disposer)
+    else ctx.logger?.warn?.(`dsh-spec-kb: ${label} returned no disposer; cleanup skipped`)
+    return disposer
+  }
 
   if (settings.loadOnStart) {
     registry.ensure().catch((error) => {
@@ -199,8 +207,7 @@ export async function apply(ctx, config) {
 
   const tool = (definition) => {
     try {
-      const disposer = textTool(ctx, definition)
-      if (typeof disposer === 'function') disposers.push(disposer)
+      keep(textTool(ctx, definition), definition.name)
     } catch (error) {
       ctx.logger?.error?.(`dsh-spec-kb: failed to register ${definition.name}: ${String(error?.message ?? error)}`)
     }
@@ -224,6 +231,7 @@ export async function apply(ctx, config) {
           loadedInMs: registry.loadMs,
           knowledgeBases,
           failed: registry.kbs.filter((store) => store.loadError).length,
+          settingsPage: routesState.ok ? { ok: true } : { ok: false, reason: routesState.reason },
         })
       } catch (error) {
         return errorResult(error)
@@ -455,17 +463,21 @@ export async function apply(ctx, config) {
       // The store list is a prompt variable, so it is re-read at every prompt
       // assembly: a path saved in the Settings page shows up in the next turn
       // without restarting the Harness.
-      const variableDisposer = ctx.systemPrompt.variable('spec_kb_stores', () => {
-        const names = describeStores(effectivePaths(defaults).paths)
-        return names.length > 0 ? names.join(', ') : 'none'
-      })
-      if (typeof variableDisposer === 'function') disposers.push(variableDisposer)
-      const sectionDisposer = ctx.systemPrompt.section({
-        name: 'spec-kb:guidance',
-        order: 8000,
-        text: guidanceTemplate(),
-      })
-      if (typeof sectionDisposer === 'function') disposers.push(sectionDisposer)
+      keep(
+        ctx.systemPrompt.variable('spec_kb_stores', () => {
+          const names = describeStores(effectivePaths(defaults).paths)
+          return names.length > 0 ? names.join(', ') : 'none'
+        }),
+        'prompt variable',
+      )
+      keep(
+        ctx.systemPrompt.section({
+          name: 'spec-kb:guidance',
+          order: 8000,
+          text: guidanceTemplate(),
+        }),
+        'prompt section',
+      )
     } catch (error) {
       ctx.logger?.warn?.(`dsh-spec-kb: prompt section failed: ${String(error?.message ?? error)}`)
     }
@@ -484,6 +496,8 @@ export async function apply(ctx, config) {
         for (const route of createSpecKbRoutes({ registry, defaults })) {
           routeDisposers.push(scope.webServer.register({ kind: 'exact', path: route.path, handler: route.handler }))
         }
+        routesState.ok = true
+        routesState.reason = ''
         return () => {
           for (const dispose of routeDisposers.reverse()) {
             try {
@@ -495,8 +509,11 @@ export async function apply(ctx, config) {
         }
       })
     } catch (error) {
-      ctx.logger?.warn?.(`dsh-spec-kb: web routes failed: ${String(error?.message ?? error)}`)
+      routesState.reason = String(error?.message ?? error)
+      ctx.logger?.warn?.(`dsh-spec-kb: Settings page unavailable (web routes failed): ${routesState.reason}`)
     }
+  } else {
+    routesState.reason = 'no webServer service in this profile'
   }
 
   ctx.logger?.info?.(

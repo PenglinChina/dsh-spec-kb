@@ -179,5 +179,13 @@ await check('C2: compliance with an unknown kb returns nothing', async () => {
   assert.equal(registry.byId('nope'), null)
 })
 
+// ── Byte ranges: records are re-read from the store, never held in memory ──
+await check('G1: a big-store record is read back from its byte range', async () => {
+  const found = await registry.get('SWS_NvM_00051')
+  assert.equal(found.found, true)
+  assert.ok(String(found.record?.fields?.body ?? found.record?.summary ?? '').length > 40)
+  assert.equal(autosar.text, '')
+})
+
 console.log(`\n${passed}/${passed + failed} checks passed`)
 process.exit(failed === 0 ? 0 : 1)
