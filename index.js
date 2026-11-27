@@ -16,9 +16,9 @@
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { SpecKbRegistry, citationOf, clip, normalizePathList } from './lib/kb.js'
+import { SpecKbRegistry, citationOf, clip, looksLikeStoreSync, normalizePathList } from './lib/kb.js'
 import { createSpecKbRoutes } from './lib/routes.js'
 import { effectivePaths } from './lib/settings.js'
 
@@ -81,7 +81,16 @@ function projectHits(hits) {
 function projectRecord(store, index, record, maxBodyChars) {
   const fields = record?.fields && typeof record.fields === 'object' ? record.fields : {}
   const body =
-    fields.body ?? fields.definition ?? fields.description ?? fields.syntax ?? fields.lead ?? record?.summary ?? ''
+    fields.body ??
+    fields.definition ??
+    fields.description ??
+    fields.syntax ??
+    fields.lead ??
+    record?.text ??
+    record?.content ??
+    record?.body ??
+    record?.summary ??
+    ''
   const fieldSummary = {}
   for (const [key, value] of Object.entries(fields)) {
     if (value === null || value === undefined) continue
@@ -118,17 +127,13 @@ function describeStores(paths) {
     const dir = String(raw).replace(/[\\/]+$/, '')
     if (dir === '') continue
     try {
-      if (statSync(join(dir, 'manifest.json')).isFile()) {
+      if (looksLikeStoreSync(dir)) {
         names.push(basename(dir))
         continue
       }
       for (const child of readdirSync(dir, { withFileTypes: true })) {
         if (!child.isDirectory()) continue
-        try {
-          if (statSync(join(dir, child.name, 'manifest.json')).isFile()) names.push(child.name)
-        } catch {
-          /* not a store */
-        }
+        if (looksLikeStoreSync(join(dir, child.name))) names.push(child.name)
       }
     } catch {
       names.push(basename(dir))

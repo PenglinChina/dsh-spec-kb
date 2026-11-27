@@ -211,6 +211,24 @@ writeStore(
   },
 )
 
+// A plain JSONL store: no manifest, foreign field names, one sections.jsonl.
+const plainDir = join(root, 'plain-kb')
+mkdirSync(plainDir, { recursive: true })
+writeFileSync(
+  join(plainDir, 'data.jsonl'),
+  [
+    JSON.stringify({ id: 'p1', title: 'Alpha rule', text: 'Alpha body explains write protection.', category: 'Core', pageNo: 12, chapter: '3.1' }),
+    JSON.stringify({ id: 'p2', title: 'Beta rule', content: 'Beta body about diagnostics.', category: 'Diag' }),
+  ].join('\n') + '\n',
+)
+writeFileSync(
+  join(plainDir, 'sections.jsonl'),
+  [
+    JSON.stringify({ module: 'Core', section: '3.1', page: 12, title: 'Alpha section', text: 'Alpha section text' }),
+    JSON.stringify({ module: 'Diag', section: '4', page: 20, title: 'Beta section', text: 'Beta section text' }),
+  ].join('\n') + '\n',
+)
+
 // ── harness ────────────────────────────────────────────────────────────────
 
 let passed = 0
@@ -338,6 +356,45 @@ await check('the section cache keeps a bounded number of modules', async () => {
   assert.ok(store.sectionsCache.size <= 16, `cache grew to ${store.sectionsCache.size}`)
 })
 
+await check('a plain JSONL store loads without a manifest', async () => {
+  const plain = registry.byId('plain-kb')
+  assert.ok(plain, 'generic store not discovered')
+  assert.equal(plain.profile, 'generic')
+  assert.equal(plain.entries.length, 2)
+  assert.ok(plain.inferred.has('name←title'), `inferred: ${[...plain.inferred].join(', ')}`)
+  assert.ok(plain.inferred.has('body←text') || plain.inferred.has('body←content'))
+})
+
+await check('aliased fields reach the index and the citation', async () => {
+  const result = await registry.search({ query: 'write protection', kb: 'plain-kb', limit: 1 })
+  assert.ok(result.total > 0)
+  const index = result.hits[0].index
+  assert.equal(index.module, 'Core')
+  assert.equal(index.section, '3.1')
+  assert.equal(index.page, 12)
+  const citation = citationOf('plain-kb', index)
+  assert.ok(citation.includes('§3.1'), citation)
+  assert.ok(citation.includes('p.12'), citation)
+})
+
+await check('sections.jsonl serves one module at a time', async () => {
+  const store = registry.byId('plain-kb')
+  const core = await store.sections('Core')
+  assert.equal(core.found, true)
+  assert.equal(core.total, 1)
+  assert.match(core.items[0].text, /Alpha section text/)
+  const diag = await store.sections('Diag')
+  assert.match(diag.items[0].text, /Beta section text/)
+})
+
+await check('a generic store validates with SKIP, not FAIL', async () => {
+  const report = await registry.byId('plain-kb').validate()
+  assert.equal(report.ok, true)
+  assert.equal(report.profile, 'generic')
+  assert.ok(report.checks.some((item) => item.status === 'SKIP'))
+  assert.ok(!report.checks.some((item) => item.status === 'FAIL'))
+})
+
 // ── HTTP routes (Settings page) ────────────────────────────────────────────
 
 const routes = createSpecKbRoutes({ registry, defaults: [root] })
@@ -374,7 +431,7 @@ await check('status reports the fixture stores', async () => {
   assert.deepEqual(body.paths, [resolve(root)])
   assert.deepEqual(
     body.stores.map((store) => store.kb_id).sort((a, b) => a.localeCompare(b)),
-    ['autosar-spec-4.3.1', 'bom-fixture', 'neusar-ccore-v3'],
+    ['autosar-spec-4.3.1', 'bom-fixture', 'neusar-ccore-v3', 'plain-kb'],
   )
 })
 
@@ -390,7 +447,7 @@ await check('saving paths validates, then persists and reloads', async () => {
   const good = await post('/api/spec-kb/paths', { paths: [root] })
   assert.equal(good.status, 200)
   assert.equal(good.body.source, 'settings')
-  assert.equal(good.body.stores.length, 3)
+  assert.equal(good.body.stores.length, 4)
 })
 
 await check('reset restores the bundle defaults', async () => {
